@@ -1,0 +1,94 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 게시글 데이터 스키마 및 크기 검증 함수
+    // imageUrl: 대표 이미지 (Cloudinary HTTPS URL 또는 빈 문자열 "")
+    // additionalImages: 추가 첨부 이미지 배열 (최대 10개, 각 항목은 Cloudinary HTTPS URL)
+    function isValidPost(data) {
+      return data.keys().hasAll([
+          'title',
+          'content',
+          'imageUrl',
+          'authorUid',
+          'authorName',
+          'isSecret',
+          'secretPin',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'title',
+          'content',
+          'imageUrl',
+          'additionalImages',
+          'authorUid',
+          'authorName',
+          'isSecret',
+          'secretPin',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.title is string
+        && data.title.size() >= 1
+        && data.title.size() <= 80
+        && data.content is string
+        && data.content.size() >= 1
+        && data.content.size() <= 5000
+        && data.imageUrl is string
+        && data.imageUrl.size() <= 1000
+        && (data.imageUrl == '' || data.imageUrl.matches('^https://.*'))
+        && (
+          !('additionalImages' in data) ||
+          (
+            data.additionalImages is list
+            && data.additionalImages.size() <= 10
+          )
+        )
+        && data.authorUid is string
+        && data.authorUid.size() >= 1
+        && data.authorUid.size() <= 128
+        && data.authorName is string
+        && data.authorName.size() >= 1
+        && data.authorName.size() <= 40
+        && data.isSecret is bool
+        && data.secretPin is string
+        && (
+          (!data.isSecret && data.secretPin == '') ||
+          (data.isSecret && data.secretPin.matches('^[0-9]{4}$'))
+        )
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // /posts 컬렉션 접근 권한 규칙 (Firebase Authentication 연동)
+    match /posts/{postId} {
+      // 1. 로그인하지 않아도 누구나 게시글 조회 가능
+      allow read: if true;
+
+      // 2. 로그인한 사용자만 작성 가능 + 본인 UID로만 저장 가능
+      allow create: if request.auth != null
+                    && isValidPost(request.resource.data)
+                    && request.resource.data.authorUid == request.auth.uid;
+
+      // 3. 본인이 작성한 게시글(authorUid == request.auth.uid)만 수정 가능
+      //    (작성자 UID, 작성자명, 최초 작성일은 변경 불가)
+      allow update: if request.auth != null
+                    && resource.data.get('authorUid', '') == request.auth.uid
+                    && isValidPost(request.resource.data)
+                    && request.resource.data.authorUid == resource.data.authorUid
+                    && request.resource.data.authorName == resource.data.authorName
+                    && request.resource.data.createdAt == resource.data.createdAt;
+
+      // 4. 본인이 작성한 게시글(authorUid == request.auth.uid)만 삭제 가능
+      allow delete: if request.auth != null
+                    && resource.data.get('authorUid', '') == request.auth.uid;
+    }
+
+    // 정의되지 않은 모든 컬렉션 접근 기본 차단
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
